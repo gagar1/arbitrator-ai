@@ -1,57 +1,93 @@
+# Docker Compose for Arbitrator AI
+# Educational multi-agent system with supporting services
+
 version: '3.8'
 
 services:
+  # =============================================================================
+  # MAIN APPLICATION SERVICE
+  # The core Arbitrator AI application with multi-agent capabilities
+  # =============================================================================
   arbitrator-ai:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: .                    # Build from current directory
+      dockerfile: Dockerfile        # Use the main Dockerfile
+      target: development           # Use development stage for local development
+    container_name: arbitrator-ai-app
     ports:
-      - "8000:8000"
+      - "8000:8000"                # Expose API on localhost:8000
     environment:
-      - API_HOST=0.0.0.0
-      - API_PORT=8000
-      - DATA_DIR=/app/data
-      - RAG_PERSIST_DIR=/app/data/chroma_db
+      # Application configuration
+      - API_HOST=0.0.0.0           # Listen on all interfaces
+      - API_PORT=8000              # API server port
+      - LOG_LEVEL=INFO             # Logging level
+      
+      # Data directories
+      - DATA_DIR=/app/data         # Main data directory
+      - RAG_PERSIST_DIR=/app/data/chroma_db  # Vector database storage
+      
+      # Database connections
+      - DATABASE_URL=postgresql://arbitrator:arbitrator_password@postgres:5432/arbitrator_ai
+      - REDIS_URL=redis://redis:6379/0
     env_file:
-      - .env
+      - .env                        # Load additional environment variables
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      # Mount directories for development and data persistence
+      - ./app:/app/app:rw          # Mount source code for hot reload
+      - ./data:/app/data:rw        # Persist document and vector data
+      - ./logs:/app/logs:rw        # Persist application logs
     depends_on:
-      - redis
-      - postgres
+      - redis                       # Wait for Redis to start
+      - postgres                    # Wait for PostgreSQL to start
+    networks:
+      - arbitrator-network          # Connect to custom network
+    restart: unless-stopped         # Restart policy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s                 # Check every 30 seconds
+      timeout: 10s                  # Timeout after 10 seconds
+      retries: 3                    # Retry 3 times before marking unhealthy
+      start_period: 40s             # Wait 40s before first check
+
+  # =============================================================================
+  # REDIS CACHE SERVICE
+  # In-memory data store for caching and session management
+  # =============================================================================
+  redis:
+    image: redis:7-alpine          # Lightweight Redis image
+    container_name: arbitrator-redis
+    ports:
+      - "6379:6379"                # Expose Redis port for debugging
+    volumes:
+      - redis_data:/data:rw        # Persist Redis data
     networks:
       - arbitrator-network
     restart: unless-stopped
+    command: redis-server --appendonly yes  # Enable data persistence
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - arbitrator-network
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-
+  # =============================================================================
+  # POSTGRESQL DATABASE SERVICE
+  # Relational database for storing application data and metadata
+  # =============================================================================
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine      # Lightweight PostgreSQL image
+    container_name: arbitrator-postgres
     environment:
-      POSTGRES_DB: arbitrator_ai
-      POSTGRES_USER: arbitrator
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arbitrator_password}
+      # Database configuration
+      POSTGRES_DB: arbitrator_ai           # Database name
+      POSTGRES_USER: arbitrator            # Database user
+      POSTGRES_PASSWORD: arbitrator_password  # Database password (change in production!)
     ports:
-      - "5432:5432"
+      - "5432:5432"                # Expose PostgreSQL port for debugging
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      # Persist database data and initialization scripts
+      - postgres_data:/var/lib/postgresql/data:rw
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     networks:
       - arbitrator-network
     restart: unless-stopped
@@ -61,101 +97,103 @@ services:
       timeout: 10s
       retries: 5
 
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/ssl:/etc/nginx/ssl
-    depends_on:
-      - arbitrator-ai
-    networks:
-      - arbitrator-network
-    restart: unless-stopped
-
+  # =============================================================================
+  # PROMETHEUS MONITORING SERVICE
+  # Metrics collection and monitoring for application performance
+  # =============================================================================
   prometheus:
     image: prom/prometheus:latest
+    container_name: arbitrator-prometheus
     ports:
-      - "9090:9090"
+      - "9090:9090"                # Prometheus web UI
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
+      # Configuration and data persistence
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus:rw
     command:
+      # Prometheus configuration
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/etc/prometheus/console_libraries'
       - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=200h'  # Keep data for 200 hours
+      - '--web.enable-lifecycle'              # Enable configuration reload
     networks:
       - arbitrator-network
     restart: unless-stopped
+    depends_on:
+      - arbitrator-ai              # Monitor the main application
 
+  # =============================================================================
+  # GRAFANA VISUALIZATION SERVICE
+  # Dashboard and visualization for monitoring data
+  # =============================================================================
   grafana:
     image: grafana/grafana:latest
+    container_name: arbitrator-grafana
     ports:
-      - "3000:3000"
+      - "3000:3000"                # Grafana web UI
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      # Default admin password (change in production!)
+      GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+      # Dashboard and data persistence
+      - grafana_data:/var/lib/grafana:rw
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
     depends_on:
-      - prometheus
+      - prometheus                 # Grafana uses Prometheus as data source
     networks:
       - arbitrator-network
     restart: unless-stopped
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
-    environment:
-      - discovery.type=single-node
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - xpack.security.enabled=false
-    ports:
-      - "9200:9200"
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
-    networks:
-      - arbitrator-network
-    restart: unless-stopped
-
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.11.0
-    ports:
-      - "5601:5601"
-    environment:
-      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
-    depends_on:
-      - elasticsearch
-    networks:
-      - arbitrator-network
-    restart: unless-stopped
-
-  filebeat:
-    image: docker.elastic.co/beats/filebeat:8.11.0
-    user: root
-    volumes:
-      - ./monitoring/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
-      - ./logs:/app/logs:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - elasticsearch
-    networks:
-      - arbitrator-network
-    restart: unless-stopped
-
+# =============================================================================
+# PERSISTENT VOLUMES
+# Named volumes for data persistence across container restarts
+# =============================================================================
 volumes:
-  postgres_data:
-  redis_data:
-  prometheus_data:
-  grafana_data:
-  elasticsearch_data:
+  postgres_data:                   # PostgreSQL database files
+    driver: local
+  redis_data:                      # Redis persistence files
+    driver: local
+  prometheus_data:                 # Prometheus metrics data
+    driver: local
+  grafana_data:                    # Grafana configuration and dashboards
+    driver: local
 
+# =============================================================================
+# CUSTOM NETWORK
+# Isolated network for service communication
+# =============================================================================
 networks:
   arbitrator-network:
-    driver: bridge
+    driver: bridge                 # Use bridge network driver
+    
+# =============================================================================
+# USAGE INSTRUCTIONS
+# =============================================================================
+#
+# 1. Start all services:
+#    docker-compose up -d
+#
+# 2. View logs:
+#    docker-compose logs -f arbitrator-ai
+#
+# 3. Access services:
+#    - API Documentation: http://localhost:8000/docs
+#    - Grafana Dashboard: http://localhost:3000 (admin/admin)
+#    - Prometheus Metrics: http://localhost:9090
+#
+# 4. Stop all services:
+#    docker-compose down
+#
+# 5. Stop and remove volumes (WARNING: deletes all data):
+#    docker-compose down -v
+#
+# 6. Rebuild application:
+#    docker-compose build arbitrator-ai
+#
+# 7. View service status:
+#    docker-compose ps
+#
+# =============================================================================

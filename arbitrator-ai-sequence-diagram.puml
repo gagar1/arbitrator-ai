@@ -1,0 +1,345 @@
+@startuml Arbitrator AI - Complete Technical Flow
+!theme aws-orange
+title Arbitrator AI - Multi-Agent System with RAG\nLow-Level Technical Sequence Diagram
+
+' Define participants with detailed descriptions
+actor "User" as User #lightblue
+participant "FastAPI\nMain App" as API #lightgreen
+participant "Security\nMiddleware" as Security #orange
+participant "Rate Limiter" as RateLimit #red
+participant "Agent Router" as Router #purple
+participant "Arbitrator\nAgent" as ArbitratorAgent #gold
+participant "Legal Research\nAgent" as LegalAgent #lightcyan
+participant "Negotiation\nAgent" as NegotiationAgent #lightpink
+participant "RAG Engine" as RAG #lightyellow
+participant "ChromaDB\nVector Store" as VectorDB #lightgray
+participant "Document\nProcessor" as DocProcessor #lightsteelblue
+participant "Contract\nAnalyzer Tool" as ContractTool #wheat
+participant "Weather\nAPI Tool" as WeatherTool #skyblue
+participant "Shipping\nTracker Tool" as ShippingTool #lightcoral
+participant "OpenTelemetry\nTracing" as OTEL #darkseagreen
+participant "Prometheus\nMetrics" as Metrics #mediumorchid
+participant "Structured\nLogger" as Logger #lightsalmon
+participant "PostgreSQL\nDatabase" as DB #lightsteelblue
+participant "Redis\nCache" as Cache #mistyrose
+participant "External AI\nModel (Claude/GPT)" as AIModel #lavender
+
+== 1. Initial Request & Security Layer ==
+
+User -> API: POST /agents/arbitrator/process\n{"dispute_details": "Payment delay", "contract_id": "ABC-123"}
+note right: HTTP request with JSON payload\ncontaining dispute information
+
+API -> OTEL: create_span("arbitrator_request")
+activate OTEL
+OTEL -> OTEL: set_attributes({"user_id": "user123", "contract_id": "ABC-123"})
+
+API -> Logger: log_request_start(request_id, user_id, endpoint)
+activate Logger
+Logger -> Logger: format_json_log({"level": "INFO", "event": "request_start"})
+
+API -> Security: validate_jwt_token(authorization_header)
+activate Security
+Security -> Security: decode_jwt(token)
+Security -> Security: verify_signature(token, secret_key)
+Security -> Security: check_expiration(token.exp)
+Security --> API: user_context{"user_id": "user123", "roles": ["arbitrator"]}
+deactivate Security
+
+API -> RateLimit: check_rate_limit(user_id="user123", endpoint="/agents/arbitrator")
+activate RateLimit
+RateLimit -> Cache: get("rate_limit:user123:/agents/arbitrator")
+activate Cache
+Cache --> RateLimit: current_count=5, window_start=timestamp
+deactivate Cache
+RateLimit -> RateLimit: calculate_remaining_requests(current_count, limit=10)
+RateLimit --> API: rate_limit_ok=True, remaining=5
+deactivate RateLimit
+
+API -> Metrics: increment_counter("http_requests_total", {"method": "POST", "endpoint": "/agents/arbitrator"})
+activate Metrics
+Metrics -> Metrics: update_prometheus_metrics()
+deactivate Metrics
+
+== 2. Request Routing & Agent Selection ==
+
+API -> Router: route_request(request_data, user_context)
+activate Router
+Router -> Router: classify_request_type(dispute_details)
+note right: Uses NLP to determine:\n- Arbitration (main dispute)\n- Legal research needed\n- Negotiation required
+Router -> Router: determine_agent_chain(["arbitrator", "legal_research", "negotiation"])
+Router --> API: agent_chain=[ArbitratorAgent, LegalAgent, NegotiationAgent]
+deactivate Router
+
+== 3. Document Retrieval & RAG Processing ==
+
+API -> ArbitratorAgent: process(input_data={"dispute_details": "Payment delay", "contract_id": "ABC-123"})
+activate ArbitratorAgent
+
+ArbitratorAgent -> OTEL: create_child_span("arbitrator_processing")
+ArbitratorAgent -> Logger: log_agent_start("ArbitratorAgent", request_id)
+
+ArbitratorAgent -> RAG: query("contract ABC-123 payment terms delay dispute", top_k=5)
+activate RAG
+
+RAG -> OTEL: create_child_span("rag_query")
+RAG -> Logger: log_rag_query(query_text, top_k)
+
+RAG -> RAG: preprocess_query(query_text)
+note right: Text preprocessing:\n- Tokenization\n- Stop word removal\n- Normalization
+
+RAG -> VectorDB: query(query_embeddings=[embedding_vector], n_results=5)
+activate VectorDB
+
+VectorDB -> VectorDB: cosine_similarity_search(query_embedding, document_embeddings)
+note right: Vector similarity calculation:\ncos(θ) = (A·B)/(||A||×||B||)\nwhere A=query_vector, B=doc_vector
+
+VectorDB -> VectorDB: rank_results_by_score(similarity_scores)
+VectorDB --> RAG: results={"documents": [doc1, doc2, doc3], "metadatas": [...], "distances": [0.1, 0.15, 0.2]}
+deactivate VectorDB
+
+RAG -> RAG: filter_relevant_chunks(results, min_similarity=0.7)
+RAG -> RAG: rerank_by_relevance(filtered_results)
+RAG --> ArbitratorAgent: relevant_context=["Payment terms: 30 days", "Late fee: 2%", "Force majeure clause"]
+deactivate RAG
+
+== 4. Contract Analysis Tool Integration ==
+
+ArbitratorAgent -> ContractTool: analyze_terms(contract_id="ABC-123", dispute_details="Payment delay")
+activate ContractTool
+
+ContractTool -> OTEL: create_child_span("contract_analysis")
+ContractTool -> DB: SELECT * FROM contracts WHERE contract_id = 'ABC-123'
+activate DB
+DB --> ContractTool: contract_data={"terms": {...}, "parties": [...], "obligations": [...]}
+deactivate DB
+
+ContractTool -> ContractTool: extract_payment_clauses(contract_data)
+ContractTool -> ContractTool: identify_breach_conditions(payment_delay, contract_terms)
+ContractTool -> ContractTool: calculate_penalty_amounts(late_days=15, contract_terms)
+ContractTool -> ContractTool: assess_legal_risks(breach_type="payment_delay")
+
+ContractTool --> ArbitratorAgent: analysis_result={
+  "payment_terms": "30 days from delivery",
+  "current_delay": "15 days overdue",
+  "penalty_amount": "$2,500 (2% of $125,000)",
+  "breach_severity": "moderate",
+  "recommended_action": "formal_notice_with_penalty"
+}
+deactivate ContractTool
+
+== 5. External Data Integration (Weather & Shipping) ==
+
+ArbitratorAgent -> WeatherTool: get_weather_data(location="Chicago", date_range="2024-01-15 to 2024-01-30")
+activate WeatherTool
+
+WeatherTool -> WeatherTool: validate_api_key(weather_api_key)
+WeatherTool -> WeatherTool: construct_api_request(location, date_range)
+WeatherTool -> WeatherTool: HTTP_GET("https://api.weather.com/historical")
+note right: External API call with:\n- Authentication headers\n- Rate limiting compliance\n- Retry logic for failures
+
+WeatherTool -> WeatherTool: parse_weather_response(api_response)
+WeatherTool -> WeatherTool: analyze_force_majeure_conditions(weather_data)
+WeatherTool --> ArbitratorAgent: weather_analysis={
+  "severe_weather_days": 3,
+  "force_majeure_applicable": True,
+  "weather_impact": "Blizzard conditions Jan 20-22"
+}
+deactivate WeatherTool
+
+ArbitratorAgent -> ShippingTool: track_shipment(tracking_number="1Z999AA1234567890", carrier="UPS")
+activate ShippingTool
+
+ShippingTool -> ShippingTool: select_carrier_api(carrier="UPS")
+ShippingTool -> ShippingTool: authenticate_with_carrier(ups_api_credentials)
+ShippingTool -> ShippingTool: HTTP_GET("https://onlinetools.ups.com/track/v1/details/1Z999AA1234567890")
+
+ShippingTool -> ShippingTool: parse_tracking_response(tracking_data)
+ShippingTool -> ShippingTool: analyze_delivery_performance(expected_date, actual_date)
+ShippingTool --> ArbitratorAgent: shipping_analysis={
+  "expected_delivery": "2024-01-15",
+  "actual_delivery": "2024-01-25",
+  "delay_reason": "Weather delay",
+  "carrier_responsibility": False
+}
+deactivate ShippingTool
+
+== 6. AI Model Integration & Decision Generation ==
+
+ArbitratorAgent -> ArbitratorAgent: compile_context_prompt(rag_context, contract_analysis, weather_data, shipping_data)
+note right: Prompt engineering:\n- System prompt (agent personality)\n- Context injection (RAG results)\n- Structured reasoning format\n- Output format specification
+
+ArbitratorAgent -> AIModel: generate_response(prompt=compiled_prompt, model_config={"temperature": 0.1, "max_tokens": 2000})
+activate AIModel
+
+AIModel -> AIModel: process_prompt_with_context(system_prompt + user_context)
+AIModel -> AIModel: apply_reasoning_framework(legal_analysis_steps)
+AIModel -> AIModel: generate_structured_decision(evidence_based_reasoning)
+
+AIModel --> ArbitratorAgent: ai_response={
+  "decision": "Partial liability due to force majeure",
+  "reasoning": "Weather conditions constitute force majeure...",
+  "penalty_adjustment": "Reduce penalty by 60% due to weather",
+  "confidence_score": 0.85
+}
+deactivate AIModel
+
+== 7. Agent Chaining - Legal Research ==
+
+ArbitratorAgent -> LegalAgent: process({
+  "research_query": "Force majeure weather delays shipping contracts Illinois",
+  "jurisdiction": "Illinois",
+  "case_type": "commercial_dispute"
+})
+activate LegalAgent
+
+LegalAgent -> RAG: query("force majeure weather shipping Illinois precedent case law", top_k=10)
+activate RAG
+RAG -> VectorDB: search_legal_documents(query_embedding)
+VectorDB --> RAG: legal_precedents=["Case A v B (2019)", "Weather Shipping Corp v...", ...]
+deactivate VectorDB
+RAG --> LegalAgent: legal_context=[precedent_cases, statutes, regulations]
+deactivate RAG
+
+LegalAgent -> AIModel: analyze_legal_precedents(legal_context, current_case_facts)
+activate AIModel
+AIModel --> LegalAgent: legal_analysis={
+  "applicable_precedents": [...],
+  "statutory_references": [...],
+  "legal_strength": "strong_support_for_force_majeure"
+}
+deactivate AIModel
+
+LegalAgent --> ArbitratorAgent: legal_research_result={
+  "precedent_support": "Strong precedent for weather-related force majeure",
+  "statutory_basis": "UCC 2-615, Illinois Commercial Code",
+  "recommendation": "Force majeure defense likely successful"
+}
+deactivate LegalAgent
+
+== 8. Agent Chaining - Negotiation Support ==
+
+ArbitratorAgent -> NegotiationAgent: process({
+  "dispute_context": arbitrator_analysis,
+  "legal_analysis": legal_research_result,
+  "parties": ["Buyer Corp", "Seller LLC"],
+  "negotiation_goal": "mutually_acceptable_resolution"
+})
+activate NegotiationAgent
+
+NegotiationAgent -> NegotiationAgent: analyze_party_positions(dispute_context)
+NegotiationAgent -> NegotiationAgent: identify_common_interests(both_parties_want_continued_relationship)
+NegotiationAgent -> NegotiationAgent: generate_win_win_solutions(creative_alternatives)
+
+NegotiationAgent -> AIModel: generate_negotiation_strategies(party_analysis, legal_strength)
+activate AIModel
+AIModel --> NegotiationAgent: negotiation_recommendations={
+  "primary_strategy": "collaborative_problem_solving",
+  "fallback_options": [...],
+  "concession_framework": {...}
+}
+deactivate AIModel
+
+NegotiationAgent --> ArbitratorAgent: negotiation_result={
+  "recommended_settlement": "40% penalty reduction + extended payment terms",
+  "implementation_steps": [...],
+  "relationship_preservation": "High priority given ongoing business"
+}
+deactivate NegotiationAgent
+
+== 9. Final Decision Compilation & Response ==
+
+ArbitratorAgent -> ArbitratorAgent: compile_final_decision({
+  arbitrator_analysis,
+  legal_research_result,
+  negotiation_result
+})
+
+ArbitratorAgent -> ArbitratorAgent: validate_decision_consistency(all_agent_outputs)
+ArbitratorAgent -> ArbitratorAgent: calculate_confidence_score(evidence_strength, precedent_support)
+
+ArbitratorAgent -> DB: INSERT INTO arbitration_decisions (case_id, decision, reasoning, timestamp)
+activate DB
+DB --> ArbitratorAgent: decision_saved=True, decision_id=12345
+deactivate DB
+
+ArbitratorAgent -> Cache: cache_decision(contract_id, decision_summary, ttl=3600)
+activate Cache
+Cache --> ArbitratorAgent: cached=True
+deactivate Cache
+
+ArbitratorAgent -> Metrics: record_decision_metrics(processing_time, confidence_score, agent_chain_length)
+activate Metrics
+Metrics -> Metrics: update_histograms("arbitration_processing_duration", processing_time)
+Metrics -> Metrics: increment_counter("arbitration_decisions_total", {"outcome": "partial_liability"})
+deactivate Metrics
+
+ArbitratorAgent --> API: final_response={
+  "decision": "Partial liability with 60% penalty reduction",
+  "reasoning": "Force majeure conditions substantiated by weather data...",
+  "legal_basis": "UCC 2-615, supported by Illinois precedents",
+  "recommended_action": "Implement negotiated settlement terms",
+  "confidence": 0.87,
+  "processing_time": "2.3 seconds",
+  "agents_consulted": ["arbitrator", "legal_research", "negotiation"]
+}
+deactivate ArbitratorAgent
+
+== 10. Response Processing & Observability ==
+
+API -> Logger: log_response_success(request_id, response_size, processing_time)
+activate Logger
+Logger -> Logger: format_json_log({
+  "level": "INFO",
+  "event": "request_completed",
+  "request_id": "req_12345",
+  "processing_time_ms": 2300,
+  "response_size_bytes": 1024,
+  "agents_used": ["arbitrator", "legal", "negotiation"],
+  "confidence_score": 0.87
+})
+deactivate Logger
+
+API -> OTEL: add_span_attributes({
+  "arbitration.decision": "partial_liability",
+  "arbitration.confidence": 0.87,
+  "arbitration.agents_count": 3,
+  "arbitration.processing_time_ms": 2300
+})
+API -> OTEL: end_span("arbitrator_request")
+deactivate OTEL
+
+API -> Metrics: record_response_metrics(status_code=200, response_time=2.3)
+activate Metrics
+Metrics -> Metrics: histogram_observe("http_request_duration_seconds", 2.3)
+Metrics -> Metrics: counter_inc("http_responses_total", {"status": "200", "endpoint": "/agents/arbitrator"})
+deactivate Metrics
+
+API --> User: HTTP 200 OK\nContent-Type: application/json\n\n{
+  "status": "success",
+  "decision": "Partial liability with 60% penalty reduction",
+  "reasoning": "Force majeure conditions substantiated...",
+  "confidence": 0.87,
+  "request_id": "req_12345"
+}
+
+== 11. Background Processing & Cleanup ==
+
+note over API, Cache: Asynchronous background tasks
+
+API -> API: schedule_background_task("update_analytics")
+API -> API: schedule_background_task("cleanup_temp_files")
+API -> API: schedule_background_task("update_model_metrics")
+
+API -> Cache: update_user_session(user_id, last_activity=now())
+activate Cache
+Cache -> Cache: extend_session_ttl(user_session, additional_time=1800)
+deactivate Cache
+
+API -> DB: UPDATE user_activity SET last_request = NOW() WHERE user_id = 'user123'
+activate DB
+DB --> API: updated=True
+deactivate DB
+
+note over User, DB: End of request processing\nTotal time: ~2.3 seconds\nComponents involved: 12\nExternal APIs called: 2\nDatabase operations: 3\nCache operations: 4
+
+@enduml

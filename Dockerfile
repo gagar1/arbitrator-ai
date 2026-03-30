@@ -1,126 +1,143 @@
-# Multi-stage build for Arbitrator AI
+# Multi-stage Dockerfile for Arbitrator AI
+# Educational AI agent system with clean, documented stages
+
+# =============================================================================
+# STAGE 1: DEPENDENCY BUILDER
+# Purpose: Install Python dependencies in isolated environment
+# =============================================================================
 FROM python:3.11-slim as builder
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONHASHSEED=random \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# Set environment variables for Python optimization
+ENV PYTHONDONTWRITEBYTECODE=1 \    # Prevent Python from writing .pyc files
+    PYTHONUNBUFFERED=1 \           # Ensure stdout/stderr are not buffered
+    PIP_NO_CACHE_DIR=1 \           # Disable pip cache to reduce image size
+    PIP_DISABLE_PIP_VERSION_CHECK=1 # Disable pip version check for faster builds
 
-# Install system dependencies
+# Install system dependencies needed for building Python packages
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+    build-essential \              # Compiler tools for building packages
+    curl \                         # For health checks and downloads
+    && rm -rf /var/lib/apt/lists/* # Clean up package lists to reduce image size
 
-# Create and set working directory
+# Set working directory
 WORKDIR /app
 
-# Copy requirements first for better caching
+# Copy requirements file first (Docker layer caching optimization)
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Using --user flag to install in user directory for better security
+RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Production stage
+# =============================================================================
+# STAGE 2: PRODUCTION RUNTIME
+# Purpose: Minimal runtime environment with only necessary components
+# =============================================================================
 FROM python:3.11-slim as production
 
-# Set environment variables
+# Set production environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app \
-    API_HOST=0.0.0.0 \
-    API_PORT=8000
+    PYTHONPATH=/app \              # Add app directory to Python path
+    API_HOST=0.0.0.0 \             # Listen on all interfaces
+    API_PORT=8000                  # Default API port
 
-# Install runtime dependencies
+# Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
-    curl \
+    curl \                         # For health checks
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r arbitrator \
-    && useradd -r -g arbitrator arbitrator
+    && groupadd -r arbitrator \    # Create non-root group
+    && useradd -r -g arbitrator arbitrator  # Create non-root user
 
 # Set working directory
 WORKDIR /app
 
 # Copy Python packages from builder stage
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# This copies only the installed packages, not the build tools
+COPY --from=builder /root/.local /root/.local
 
-# Copy application code
-COPY app/ ./app/
-COPY data/ ./data/
-COPY .env* ./
+# Make sure scripts in .local are usable
+ENV PATH=/root/.local/bin:$PATH
 
-# Create necessary directories
-RUN mkdir -p /app/data/chroma_db \
-    && mkdir -p /app/data/contracts \
-    && mkdir -p /app/data/legal_docs \
-    && mkdir -p /app/data/temp \
-    && mkdir -p /app/logs \
-    && chown -R arbitrator:arbitrator /app
+# Copy application code with proper ownership
+COPY --chown=arbitrator:arbitrator app/ ./app/
+COPY --chown=arbitrator:arbitrator data/ ./data/
+COPY --chown=arbitrator:arbitrator .env* ./
 
-# Switch to non-root user
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/data/chroma_db \     # Vector database storage
+    /app/data/contracts \              # Contract documents
+    /app/data/temp \                   # Temporary file processing
+    /app/logs \                        # Application logs
+    && chown -R arbitrator:arbitrator /app  # Set ownership to non-root user
+
+# Switch to non-root user for security
 USER arbitrator
 
-# Health check
+# Health check to ensure application is running
+# Checks the health endpoint every 30 seconds
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health/ || exit 1
 
-# Expose port
+# Expose the application port
 EXPOSE 8000
 
 # Run the application
+# Uses Python module execution for better path handling
 CMD ["python", "-m", "app.api.main"]
 
-# Development stage
+# =============================================================================
+# STAGE 3: DEVELOPMENT ENVIRONMENT
+# Purpose: Development environment with additional tools and hot reload
+# =============================================================================
 FROM production as development
 
-# Switch back to root for development tools
+# Switch back to root for installing development tools
 USER root
 
-# Install development dependencies
+# Install development system packages
 RUN apt-get update && apt-get install -y \
-    vim \
-    htop \
+    vim \                          # Text editor for debugging
+    htop \                         # Process monitoring
+    git \                          # Version control
     && rm -rf /var/lib/apt/lists/*
 
 # Install development Python packages
 RUN pip install --no-cache-dir \
-    pytest \
-    pytest-asyncio \
-    pytest-cov \
-    black \
-    isort \
-    flake8 \
-    mypy \
-    pre-commit
+    pytest \                       # Testing framework
+    pytest-asyncio \               # Async testing support
+    pytest-cov \                   # Coverage reporting
+    black \                        # Code formatting
+    isort \                        # Import sorting
+    flake8 \                       # Code linting
+    mypy \                         # Type checking
+    pre-commit                     # Git hooks for code quality
 
-# Copy test files
-COPY tests/ ./tests/
-COPY pytest.ini .
-COPY .pre-commit-config.yaml .
-
-# Set ownership
-RUN chown -R arbitrator:arbitrator /app
+# Copy test files and configuration
+COPY --chown=arbitrator:arbitrator tests/ ./tests/
+COPY --chown=arbitrator:arbitrator pytest.ini .
+COPY --chown=arbitrator:arbitrator .pre-commit-config.yaml .
 
 # Switch back to non-root user
 USER arbitrator
 
-# Development command
+# Development command with hot reload
 CMD ["python", "-m", "app.api.main", "--reload"]
 
-# Testing stage
-FROM development as testing
-
-# Run tests
-RUN python -m pytest tests/ -v --cov=app --cov-report=html --cov-report=term
-
-# Lint and format check
-RUN black --check app/ tests/ && \
-    isort --check-only app/ tests/ && \
-    flake8 app/ tests/ && \
-    mypy app/
-
-CMD ["pytest"]
+# =============================================================================
+# BUILD INSTRUCTIONS
+# =============================================================================
+# 
+# Production build:
+#   docker build --target production -t arbitrator-ai:latest .
+# 
+# Development build:
+#   docker build --target development -t arbitrator-ai:dev .
+# 
+# Run production container:
+#   docker run -p 8000:8000 --env-file .env arbitrator-ai:latest
+# 
+# Run development container with volume mounting:
+#   docker run -p 8000:8000 -v $(pwd):/app --env-file .env arbitrator-ai:dev
+# 
+# =============================================================================
